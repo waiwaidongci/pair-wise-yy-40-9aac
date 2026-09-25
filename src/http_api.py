@@ -71,7 +71,11 @@ def make_handler(service: Service, static_dir: str):
                 status = 400
             else:
                 status = 500
-            self._json(status, {"error": exc.__class__.__name__, "message": str(exc)})
+            payload = {"error": exc.__class__.__name__, "message": str(exc)}
+            details = getattr(exc, "details", None)
+            if details:
+                payload["details"] = details
+            self._json(status, payload)
 
         def do_GET(self) -> None:
             try:
@@ -98,6 +102,19 @@ def make_handler(service: Service, static_dir: str):
                     actor, role = self._identity()
                     del actor
                     self._json(200, {"events": service.audit(role)})
+                elif path == "/api/zones":
+                    actor, role = self._identity()
+                    del actor
+                    self._json(200, {"zones": service.list_zones(role)})
+                elif path == "/api/reinforcement":
+                    actor, role = self._identity()
+                    status = parse_qs(urlparse(self.path).query).get("status", [None])[0]
+                    self._json(200, {"projects": service.list_reinforcement(role, status)})
+                elif path.startswith("/api/reinforcement/"):
+                    project_id = int(path.rsplit("/", 1)[-1])
+                    actor, role = self._identity()
+                    del actor
+                    self._json(200, service.get_reinforcement(project_id, role))
                 else:
                     self._json(404, {"error": "not_found"})
             except Exception as exc:
@@ -119,6 +136,19 @@ def make_handler(service: Service, static_dir: str):
                     expected = body.get("expected_version")
                     self._json(200, service.transition(
                         item_id, target, expected, actor, role))
+                elif path == "/api/zones":
+                    self._json(200, service.register_zone(body, actor, role))
+                elif path == "/api/reinforcement":
+                    self._json(201, service.create_reinforcement(body, actor, role))
+                elif path.startswith("/api/reinforcement/") and path.endswith("/approve"):
+                    project_id = int(path.split("/")[3])
+                    expected = body.get("expected_version")
+                    self._json(200, service.approve_reinforcement(
+                        project_id, expected, actor, role))
+                elif path.startswith("/api/reinforcement/"):
+                    project_id = int(path.rsplit("/", 1)[-1])
+                    self._json(200, service.update_reinforcement(
+                        project_id, body, actor, role))
                 else:
                     self._json(404, {"error": "not_found"})
             except Exception as exc:

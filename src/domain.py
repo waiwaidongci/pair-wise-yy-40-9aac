@@ -1,11 +1,12 @@
 from __future__ import annotations
 from dataclasses import dataclass
+from datetime import date
 from typing import Any, Dict, Optional
 class ErrorKind:
     VALIDATION="validation"; NOT_FOUND="not_found"; FORBIDDEN="forbidden"; CONFLICT="conflict"
 class DomainError(Exception):
     kind=ErrorKind.VALIDATION
-    def __init__(self,message): super().__init__(message); self.message=message
+    def __init__(self,message,details=None): super().__init__(message); self.message=message; self.details=details
 class ValidationError(DomainError): kind=ErrorKind.VALIDATION
 class NotFoundError(DomainError): kind=ErrorKind.NOT_FOUND
 class PermissionDenied(DomainError): kind=ErrorKind.FORBIDDEN
@@ -34,5 +35,20 @@ def require_number(value,field,minimum=0.0):
     except (TypeError,ValueError): raise ValidationError(f"{field}必须是数字")
     if number<minimum: raise ValidationError(f"{field}不能小于{minimum}")
     return number
+def require_int(value,field,minimum=0):
+    if isinstance(value,bool) or not isinstance(value,int):
+        if isinstance(value,float) and value.is_integer(): value=int(value)
+        else: raise ValidationError(f"{field}必须是整数")
+    if value<minimum: raise ValidationError(f"{field}不能小于{minimum}")
+    return value
+def require_bool(value,field):
+    if not isinstance(value,bool): raise ValidationError(f"{field}必须是布尔值")
+    return value
+def require_date(value,field):
+    if not isinstance(value,str): raise ValidationError(f"{field}必须是YYYY-MM-DD日期")
+    text=value.strip()
+    try: parsed=date.fromisoformat(text)
+    except ValueError: raise ValidationError(f"{field}必须是YYYY-MM-DD日期")
+    return parsed.isoformat()
 def ensure_role(role,allowed):
     if role not in allowed: raise PermissionDenied("当前角色无权执行该操作")

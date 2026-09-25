@@ -1,1 +1,244 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>建筑抗震鉴定与加固排序</title><style>body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem;color:#17212b}pre{background:#f4f7f9;padding:1rem;overflow:auto}button{padding:.55rem 1rem}</style></head><body><h1>建筑抗震鉴定与加固排序</h1><p>依据结构、用途、人员密度和历史缺陷生成鉴定与加固优先级</p><p>风险分值和人员密度共同影响排序；审核通过前必须完成评估、设计和施工证据登记。</p><button onclick="loadItems()">刷新列表</button><pre id="out">使用X-Actor和X-Role请求头调用接口。</pre><script>async function loadItems(){const r=await fetch('/api/items',{headers:{'X-Actor':'demo','X-Role':'viewer'}});document.getElementById('out').textContent=JSON.stringify(await r.json(),null,2)}</script></body></html>
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>加固立项台</title>
+<style>
+:root{--bg:#f4f6f8;--card:#fff;--line:#dde3e8;--ink:#17212b;--muted:#687784;--red:#c0392b;--green:#1e8449;--blue:#1f61a8;--amber:#b9770e}
+*{box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0;background:var(--bg);color:var(--ink)}
+header{background:#10243a;color:#fff;padding:.9rem 1.2rem;display:flex;align-items:center;gap:1rem;flex-wrap:wrap}
+header h1{font-size:1.15rem;margin:0}
+header .role{margin-left:auto;display:flex;gap:.4rem;align-items:center;font-size:.85rem}
+select,input,button{font:inherit;padding:.45rem .6rem;border:1px solid var(--line);border-radius:6px;background:#fff;color:var(--ink)}
+button{cursor:pointer}
+button.primary{background:var(--blue);color:#fff;border-color:var(--blue)}
+button.approve{background:var(--green);color:#fff;border-color:var(--green)}
+button:disabled{opacity:.45;cursor:not-allowed}
+nav{display:flex;gap:.5rem;padding:.8rem 1.2rem 0}
+nav button{background:#e6ecf1;border:none}
+nav button.active{background:var(--blue);color:#fff}
+main{padding:1rem 1.2rem 3rem;max-width:1180px;margin:0 auto}
+.panel{display:none}.panel.active{display:block}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:1rem;margin-bottom:1rem}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:.7rem}
+label{display:flex;flex-direction:column;gap:.3rem;font-size:.82rem;color:var(--muted)}
+label input{color:var(--ink)}
+.check{flex-direction:row;align-items:center;gap:.5rem;margin-top:1.1rem}
+table{width:100%;border-collapse:collapse;font-size:.86rem;background:#fff}
+th,td{border:1px solid var(--line);padding:.5rem .6rem;text-align:left;vertical-align:top}
+th{background:#eef2f6}
+.badge{display:inline-block;padding:.1rem .55rem;border-radius:99px;font-size:.75rem;color:#fff}
+.badge.pending{background:var(--amber)}.badge.approved{background:var(--green)}
+.chip{display:inline-block;margin:.15rem .25rem .15rem 0;padding:.12rem .55rem;border-radius:6px;font-size:.76rem;background:#fdecea;color:var(--red);border:1px solid #f5c6c2}
+.chip.ok{background:#e8f6ee;color:var(--green);border-color:#bfe4cd}
+.suggest{margin-top:.4rem;font-size:.8rem;color:var(--blue)}
+.suggest button{margin-left:.5rem;padding:.15rem .5rem;font-size:.78rem}
+.muted{color:var(--muted);font-size:.82rem}
+.toast{position:fixed;right:1rem;bottom:1rem;max-width:420px;background:#22303c;color:#fff;padding:.7rem 1rem;border-radius:8px;font-size:.85rem;display:none;white-space:pre-wrap;z-index:9}
+.toast.err{background:var(--red)}
+.row-actions{display:flex;gap:.4rem;align-items:center;flex-wrap:wrap}
+.voided{color:var(--red);font-size:.78rem}
+h2{font-size:1rem;margin:.3rem 0 .8rem}
+</style>
+</head>
+<body>
+<header>
+  <h1>加固立项台</h1>
+  <span class="muted" style="color:#c8d3dc">产权同意 · 维修资金 · 疏散安置容量，三关齐过方可批准</span>
+  <div class="role">
+    <span>身份</span><input id="actor" value="demo" size="8">
+    <select id="role">
+      <option value="assessor">鉴定/登记员 assessor</option>
+      <option value="structural_engineer">结构工程师</option>
+      <option value="review_board" selected>立项审查会 review_board</option>
+      <option value="viewer">只读 viewer</option>
+    </select>
+  </div>
+</header>
+<nav>
+  <button data-tab="ledger" class="active">立项列表</button>
+  <button data-tab="register">登记加固立项</button>
+  <button data-tab="zones">疏散分区容量</button>
+  <button data-tab="archive">审计存档</button>
+</nav>
+<main>
+  <section id="panel-ledger" class="panel active">
+    <div class="row-actions" style="margin-bottom:.8rem">
+      <button onclick="loadProjects()">刷新</button>
+      <select id="statusFilter"><option value="">全部状态</option><option value="pending">待立项</option><option value="approved">已批准</option></select>
+    </div>
+    <div id="projectList"></div>
+  </section>
+
+  <section id="panel-register" class="panel">
+    <div class="card">
+      <h2>登记加固立项（同意缺失或资金不足只能待立项）</h2>
+      <div class="grid">
+        <label>建筑名称<input id="f-building" value="2号楼"></label>
+        <label>产权单位<input id="f-owner" value="产权乙"></label>
+        <label class="check"><input type="checkbox" id="f-consent">产权单位已书面同意</label>
+        <label>估价（元）<input id="f-estimate" type="number" value="1000000"></label>
+        <label>可用维修资金（元）<input id="f-funds" type="number" value="1000000"></label>
+        <label>疏散分区<input id="f-zone" value="A"></label>
+        <label>施工起<input id="f-start" type="date" value="2026-10-01"></label>
+        <label>施工止<input id="f-end" type="date" value="2026-11-30"></label>
+        <label>临时安置人数<input id="f-count" type="number" value="50"></label>
+      </div>
+      <p class="muted">资金缺口 = 估价 − 可用资金（不足时为正）；同分区已批项目的重叠窗口人数计入容量。</p>
+      <button class="primary" onclick="registerProject()">登记</button>
+    </div>
+  </section>
+
+  <section id="panel-zones" class="panel">
+    <div class="card">
+      <h2>登记疏散分区临时安置容量</h2>
+      <div class="grid">
+        <label>分区编号<input id="z-zone" value="A"></label>
+        <label>容量（人）<input id="z-capacity" type="number" value="60"></label>
+      </div>
+      <p class="muted">仅 review_board 可登记/调整容量。</p>
+      <button class="primary" onclick="saveZone()">保存容量</button>
+    </div>
+    <div class="card"><h2>已登记分区</h2><div id="zoneList"></div></div>
+  </section>
+
+  <section id="panel-archive" class="panel">
+    <div class="row-actions" style="margin-bottom:.8rem"><button onclick="loadAudit()">刷新审计链</button></div>
+    <div id="auditList" class="muted">审计事件含 SHA-256 哈希链，批复失效会留下 reinforcement_void 记录。</div>
+  </section>
+</main>
+<div id="toast" class="toast"></div>
+
+<script>
+const $=id=>document.getElementById(id);
+document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('nav button').forEach(x=>x.classList.remove('active'));
+  document.querySelectorAll('.panel').forEach(x=>x.classList.remove('active'));
+  b.classList.add('active'); $('panel-'+b.dataset.tab).classList.add('active');
+  if(b.dataset.tab==='ledger')loadProjects();
+  if(b.dataset.tab==='zones')loadZones();
+  if(b.dataset.tab==='archive')loadAudit();
+});
+function headers(){return {'X-Actor':$('actor').value||'demo','X-Role':$('role').value,'Content-Type':'application/json'};}
+function toast(msg,isErr){const t=$('toast');t.textContent=msg;t.className='toast'+(isErr?' err':'');t.style.display='block';clearTimeout(t._h);t._h=setTimeout(()=>t.style.display='none',6000);}
+async function api(method,path,body){
+  const opt={method,headers:headers()}; if(body!==undefined)opt.body=JSON.stringify(body);
+  const r=await fetch(path,opt); const data=await r.json().catch(()=>({}));
+  if(!r.ok){const e=new Error(data.message||('HTTP '+r));e.details=data.details;throw e;}
+  return data;
+}
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+async function registerProject(){
+  try{
+    const p=await api('POST','/api/reinforcement',{
+      building_name:$('f-building').value, owner_name:$('f-owner').value,
+      owner_consent:$('f-consent').checked, estimate:Number($('f-estimate').value),
+      funds_available:Number($('f-funds').value), zone:$('f-zone').value,
+      construction_start:$('f-start').value, construction_end:$('f-end').value,
+      resettlement_count:Number($('f-count').value)});
+    toast('已登记为待立项'+(p.blockers.length?'，卡点：'+p.blockers.map(b=>b.message).join('；'):'，可提交批准'));
+    switchTab('ledger');
+  }catch(e){toast(e.message,true);}
+}
+function switchTab(name){document.querySelector(`nav button[data-tab="${name}"]`).click();}
+
+function blockerChips(p){
+  if(!p.blockers.length)return '<span class="chip ok">无卡点，可批准</span>';
+  return p.blockers.map(b=>'<span class="chip" title="'+esc(b.code)+'">'+esc(b.message)+'</span>').join('');
+}
+function suggestHtml(p){
+  if(!p.suggested_window)return '';
+  const w=p.suggested_window;
+  return '<div class="suggest">可调整窗口：'+esc(w.construction_start)+' ～ '+esc(w.construction_end)+
+    '<button onclick="adoptWindow('+p.id+','+p.version+',\''+w.construction_start+'\',\''+w.construction_end+'\')">采用并改期</button></div>';
+}
+async function approveProject(id,version){
+  try{const p=await api('POST',`/api/reinforcement/${id}/approve`,{expected_version:version});
+  toast('已批准立项 #'+id);loadProjects();}
+  catch(e){
+    if(e.details&&e.details.suggested_window){const w=e.details.suggested_window;
+      toast(e.message+'\n建议窗口：'+w.construction_start+' ～ '+w.construction_end,true);}
+    else toast(e.message,true);
+    loadProjects();
+  }
+}
+async function adoptWindow(id,version,s,e){
+  try{await api('POST',`/api/reinforcement/${id}`,{expected_version:version,construction_start:s,construction_end:e});
+  toast('窗口已调整，请重新判断卡点');loadProjects();}catch(err){toast(err.message,true);loadProjects();}
+}
+async function patchField(id,version,field,inputId,label){
+  const raw=$(inputId).value; if(raw===''){toast(label+'不能为空',true);return;}
+  let value=raw; if(['owner_consent'].includes(field))value=$(inputId).checked;
+  else if(['estimate','funds_available'].includes(field))value=Number(raw);
+  else if(field==='resettlement_count')value=parseInt(raw,10);
+  try{const p=await api('POST',`/api/reinforcement/${id}`,{expected_version:version,[field]:value});
+  toast(p.status==='pending'&&p.voided_reason?'原批复已失效：'+p.voided_reason:'已保存，版本 v'+p.version);
+  loadProjects();}catch(e){toast(e.message,true);loadProjects();}
+}
+
+function projectRow(p){
+  const approved=p.status==='approved';
+  return `<tr>
+    <td>#${p.id}<br><span class="badge ${p.status}">${approved?'已批准':'待立项'}</span>
+      ${p.voided_reason?`<div class="voided">批复已失效：${esc(p.voided_reason)}</div>`:''}
+      <div class="muted">v${p.version} · ${esc(p.building_name)}</div></td>
+    <td>${esc(p.owner_name)}<br>${p.owner_consent?'<span class="chip ok">已书面同意</span>':'<span class="chip">未同意</span>'}</td>
+    <td>估价 ${p.estimate.toLocaleString()}<br>资金 ${p.funds_available.toLocaleString()}<br>
+      缺口 <b style="color:${p.funding_gap>0?'var(--red)':'var(--green)'}">${p.funding_gap.toLocaleString()}</b></td>
+    <td>分区 ${esc(p.zone)}（容量 ${p.zone_capacity==null?'<span class="chip">未登记</span>':p.zone_capacity+' 人'}）<br>
+      ${esc(p.construction_start)} ～ ${esc(p.construction_end)}<br>安置 ${p.resettlement_count} 人</td>
+    <td style="min-width:260px">${blockerChips(p)}${suggestHtml(p)}
+      ${p.approval_snapshot?`<div class="muted">批复于 ${esc(p.approved_at)} 由 ${esc(p.approved_by)} 签发</div>`:''}
+      <div class="row-actions" style="margin-top:.4rem">
+        <button class="approve" ${approved||!p.approvable?'disabled':''} onclick="approveProject(${p.id},${p.version})">批准立项</button>
+      </div>
+      <details style="margin-top:.4rem"><summary class="muted">改值（批准后改动将令批复失效重算）</summary>
+        <div class="grid" style="margin-top:.5rem">
+          <label>估价<input id="e-${p.id}-estimate" type="number" value="${p.estimate}"></label>
+          <label>可用资金<input id="e-${p.id}-funds" type="number" value="${p.funds_available}"></label>
+          <label>安置人数<input id="e-${p.id}-count" type="number" value="${p.resettlement_count}"></label>
+          <label class="check"><input type="checkbox" id="e-${p.id}-consent" ${p.owner_consent?'checked':''}>已同意</label>
+        </div>
+        <div class="row-actions" style="margin-top:.5rem">
+          <button onclick="patchField(${p.id},${p.version},'estimate','e-${p.id}-estimate','估价')">改估价</button>
+          <button onclick="patchField(${p.id},${p.version},'funds_available','e-${p.id}-funds','资金')">改资金</button>
+          <button onclick="patchField(${p.id},${p.version},'resettlement_count','e-${p.id}-count','人数')">改人数</button>
+          <button onclick="patchField(${p.id},${p.version},'owner_consent','e-${p.id}-consent','同意')">改同意</button>
+        </div>
+      </details>
+    </td></tr>`;
+}
+async function loadProjects(){
+  try{
+    const q=$('statusFilter').value; const data=await api('GET','/api/reinforcement'+(q?'?status='+q:''));
+    if(!data.projects.length){$('projectList').innerHTML='<p class="muted">暂无立项记录。</p>';return;}
+    $('projectList').innerHTML='<table><thead><tr><th>状态/建筑</th><th>产权单位</th><th>估价/资金/缺口</th><th>分区/工期/安置</th><th>卡点与操作</th></tr></thead><tbody>'
+      +data.projects.map(projectRow).join('')+'</tbody></table>';
+  }catch(e){toast(e.message,true);}
+}
+$('statusFilter').onchange=loadProjects;
+
+async function saveZone(){
+  try{await api('POST','/api/zones',{zone:$('z-zone').value,capacity:parseInt($('z-capacity').value,10)});
+  toast('分区容量已保存');loadZones();}catch(e){toast(e.message,true);}
+}
+async function loadZones(){
+  try{const data=await api('GET','/api/zones');
+  $('zoneList').innerHTML=data.zones.length?'<table><tr><th>分区</th><th>容量(人)</th><th>更新人/时间</th></tr>'
+    +data.zones.map(z=>`<tr><td>${esc(z.zone)}</td><td>${z.capacity}</td><td>${esc(z.updated_by)} · ${esc(z.updated_at)}</td></tr>`).join('')+'</table>'
+    :'<p class="muted">尚未登记任何分区。</p>';}catch(e){toast(e.message,true);}
+}
+async function loadAudit(){
+  try{const data=await api('GET','/api/audit');
+  if(!data.events.length){$('auditList').textContent='暂无审计事件';return;}
+  $('auditList').innerHTML='<table><tr><th>#</th><th>动作</th><th>对象</th><th>操作人</th><th>时间</th><th>明细</th></tr>'
+    +data.events.map(e=>`<tr><td>${e.id}</td><td>${esc(e.action)}</td><td>${esc(e.entity_type)}#${e.entity_id}</td><td>${esc(e.actor)}</td><td>${esc(e.created_at)}</td><td><code>${esc(JSON.stringify(e.detail))}</code></td></tr>`).join('')+'</table>';}
+  catch(e){$('auditList').textContent='审计链仅 review_board / viewer 可查看：'+e.message;}
+}
+loadProjects();
+</script>
+</body>
+</html>

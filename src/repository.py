@@ -65,6 +65,37 @@ class Repository:
                     entry_hash TEXT NOT NULL UNIQUE,
                     created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS evacuation_zones (
+                    zone TEXT PRIMARY KEY,
+                    capacity INTEGER NOT NULL CHECK(capacity >= 0),
+                    updated_by TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS reinforcement_projects (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    building_name TEXT NOT NULL,
+                    owner_name TEXT NOT NULL,
+                    owner_consent INTEGER NOT NULL DEFAULT 0 CHECK(owner_consent IN (0,1)),
+                    estimate REAL NOT NULL CHECK(estimate >= 0),
+                    funds_available REAL NOT NULL CHECK(funds_available >= 0),
+                    zone TEXT NOT NULL,
+                    construction_start TEXT NOT NULL,
+                    construction_end TEXT NOT NULL,
+                    resettlement_count INTEGER NOT NULL CHECK(resettlement_count >= 0),
+                    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved')),
+                    version INTEGER NOT NULL DEFAULT 1,
+                    approval_snapshot TEXT,
+                    approved_at TEXT,
+                    approved_by TEXT,
+                    voided_at TEXT,
+                    voided_reason TEXT,
+                    created_by TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    CHECK(construction_end >= construction_start)
+                );
+                CREATE INDEX IF NOT EXISTS ix_reinforcement_zone_status
+                    ON reinforcement_projects(zone, status);
             """)
 
     @staticmethod
@@ -209,6 +240,151 @@ class Repository:
                 return False
             previous = row["entry_hash"]
         return True
+
+    # ---- 加固立项 ----
+
+    @staticmethod
+    def _reinforcement(row: sqlite3.Row) -> Dict[str, Any]:
+        project = dict(row)
+        project["owner_consent"] = bool(project["owner_consent"])
+        project["approval_snapshot"] = (
+            json.loads(project["approval_snapshot"]) if project["approval_snapshot"] else None
+        )
+        return project
+
+    def upsert_zone(self, zone: str, capacity: int, actor: str) -> Dict[str, Any]:
+        now = utc_now()
+        with self._lock, self.conn:
+            self.conn.execute(
+                """INSERT INTO evacuation_zones(zone, capacity, updated_by, updated_at)
+                   VALUES(?,?,?,?)
+                   ON CONFLICT(zone) DO UPDATE SET capacity=excluded.capacity,
+                       updated_by=excluded.updated_by, updated_at=excluded.updated_at""",
+                (zone, capacity, actor, now),
+            )
+        return self.get_zone(zone)
+
+    def get_zone(self, zone: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT * FROM evacuation_zones WHERE zone=?", (zone,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_zones(self) -> List[Dict[str, Any]]:
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT * FROM evacuation_zones ORDER BY zone"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def create_reinforcement(self, data: Dict[str, Any], actor: str) -> Dict[str, Any]:
+        now = utc_now()
+        with self._lock, self.conn:
+            cur = self.conn.execute(
+                """INSERT INTO reinforcement_projects(building_name, owner_name, owner_consent,
+                       estimate, funds_available, zone, construction_start, construction_end,
+                       resettlement_count, status, version, created_by, created_at, updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,1,?,?,?)""",
+                (data["building_name"], data["owner_name"], int(data["owner_consent"]),
+                 data["estimate"], data["funds_available"], data["zone"],
+                 data["construction_start"], data["construction_end"],
+                 data["resettlement_count"], "pending", actor, now, now),
+            )
+            project_id = int(cur.lastrowid)
+        return self.get_reinforcement(project_id)
+
+    def get_reinforcement(self, project_id: int) -> Dict[str, Any]:
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT * FROM reinforcement_projects WHERE id=?", (project_id,)
+            ).fetchone()
+        if row is None:
+            raise NotFoundError("加固立项不存在")
+        return self._reinforcement(row)
+
+    def list_reinforcement(self, status: Optional[str] = None) -> List[Dict[str, Any]]:
+        sql = "SELECT * FROM reinforcement_projects"
+        params: tuple = ()
+        if status:
+            sql += " WHERE status=?"
+            params = (status,)
+        sql += " ORDER BY id DESC"
+        with self._lock:
+            rows = self.conn.execute(sql, params).fetchall()
+        return [self._reinforcement(row) for row in rows]
+
+    def list_approved_in_zone(self, zone: str,
+                              exclude_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        sql = ("SELECT * FROM reinforcement_projects WHERE zone=? AND status='approved'")
+        params: tuple = (zone,)
+        if exclude_id is not None:
+            sql += " AND id<>?"
+            params = (zone, exclude_id)
+        sql += " ORDER BY construction_start"
+        with self._lock:
+            rows = self.conn.execute(sql, params).fetchall()
+        return [self._reinforcement(row) for row in rows]
+
+    def update_reinforcement(self, project_id: int, data: Dict[str, Any],
+                             expected_version: int, actor: str,
+                             void_reason: Optional[str]) -> Dict[str, Any]:
+        """乐观锁更新；若项目原已批准，则同时把批复置为失效（回到待立项）。"""
+        now = utc_now()
+        with self._lock, self.conn:
+            cur = self.conn.execute(
+                """UPDATE reinforcement_projects SET
+                       building_name=?, owner_name=?, owner_consent=?, estimate=?,
+                       funds_available=?, zone=?, construction_start=?, construction_end=?,
+                       resettlement_count=?,
+                       status=CASE WHEN ? IS NOT NULL THEN 'pending' ELSE status END,
+                       approval_snapshot=CASE WHEN ? IS NOT NULL THEN NULL
+                                             ELSE approval_snapshot END,
+                       approved_at=CASE WHEN ? IS NOT NULL THEN NULL ELSE approved_at END,
+                       approved_by=CASE WHEN ? IS NOT NULL THEN NULL ELSE approved_by END,
+                       voided_at=CASE WHEN ? IS NOT NULL THEN ? ELSE voided_at END,
+                       voided_reason=CASE WHEN ? IS NOT NULL THEN ? ELSE voided_reason END,
+                       version=version+1, updated_at=?
+                   WHERE id=? AND version=?""",
+                (data["building_name"], data["owner_name"], int(data["owner_consent"]),
+                 data["estimate"], data["funds_available"], data["zone"],
+                 data["construction_start"], data["construction_end"],
+                 data["resettlement_count"],
+                 void_reason, void_reason, void_reason, void_reason,
+                 void_reason, now, void_reason, void_reason, now,
+                 project_id, expected_version),
+            )
+            if cur.rowcount == 0:
+                exists = self.conn.execute(
+                    "SELECT 1 FROM reinforcement_projects WHERE id=?", (project_id,)
+                ).fetchone()
+                if exists is None:
+                    raise NotFoundError("加固立项不存在")
+                raise ConflictError("版本冲突，请刷新后重试")
+        return self.get_reinforcement(project_id)
+
+    def approve_reinforcement(self, project_id: int, snapshot: dict,
+                              expected_version: int, actor: str) -> Dict[str, Any]:
+        now = utc_now()
+        with self._lock, self.conn:
+            cur = self.conn.execute(
+                """UPDATE reinforcement_projects
+                   SET status='approved', version=version+1, updated_at=?,
+                       approval_snapshot=?, approved_at=?, approved_by=?,
+                       voided_at=NULL, voided_reason=NULL
+                   WHERE id=? AND version=? AND status='pending'""",
+                (now, json.dumps(snapshot, ensure_ascii=False, sort_keys=True),
+                 now, actor, project_id, expected_version),
+            )
+            if cur.rowcount == 0:
+                row = self.conn.execute(
+                    "SELECT status, version FROM reinforcement_projects WHERE id=?",
+                    (project_id,),
+                ).fetchone()
+                if row is None:
+                    raise NotFoundError("加固立项不存在")
+                raise ConflictError("状态或版本已变化，请刷新后重新判断立项卡点")
+        return self.get_reinforcement(project_id)
 
     def close(self) -> None:
         with self._lock:
