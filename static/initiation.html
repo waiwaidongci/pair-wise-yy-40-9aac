@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>加固立项台</title>
+<style>
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0;background:#f4f6f8;color:#17212b}
+  header{background:#1f3a5f;color:#fff;padding:1rem 1.5rem}
+  header a{color:#bcd4f0;margin-right:1rem}
+  main{max-width:1180px;margin:1.2rem auto;padding:0 1rem}
+  .card{background:#fff;border-radius:8px;padding:1rem 1.2rem;margin-bottom:1rem;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+  h1{margin:.2rem 0;font-size:1.3rem}
+  h2{font-size:1.05rem;margin:.2rem 0 .8rem}
+  table{border-collapse:collapse;width:100%;font-size:.85rem}
+  th,td{border-bottom:1px solid #e5e9ee;padding:.5rem .55rem;text-align:left;vertical-align:top}
+  th{background:#eef2f7;white-space:nowrap}
+  .tag{display:inline-block;padding:.1rem .5rem;border-radius:10px;font-size:.75rem;white-space:nowrap}
+  .ok{background:#e3f6e8;color:#1d7a37}
+  .wait{background:#fdf1d8;color:#9a6500}
+  .bad{background:#fde7e7;color:#b3261e}
+  .dead{background:#eceff3;color:#5a6572;text-decoration:line-through}
+  ul.blockers{margin:.2rem 0;padding-left:1.1rem;color:#b3261e}
+  .sugg{color:#1d5db8;cursor:pointer;font-size:.78rem;text-decoration:underline}
+  label{display:block;font-size:.78rem;color:#46515c;margin:.45rem 0 .15rem}
+  input,select{padding:.4rem;border:1px solid #c8d0d9;border-radius:5px;width:100%;box-sizing:border-box}
+  .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:.4rem .8rem}
+  button{padding:.45rem .9rem;border:0;border-radius:5px;background:#1f6feb;color:#fff;cursor:pointer;font-size:.85rem}
+  button.ghost{background:#e8edf3;color:#1f3a5f}
+  button:disabled{background:#c4ccd6;cursor:not-allowed}
+  .rowline{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap}
+  .msg{font-size:.82rem;margin-top:.5rem;white-space:pre-wrap}
+  .num{text-align:right;font-variant-numeric:tabular-nums}
+  dialog{border:0;border-radius:8px;padding:0;width:520px;max-width:92vw}
+  dialog .card{margin:0;box-shadow:none}
+</style>
+</head>
+<body>
+<header>
+  <h1>加固立项台</h1>
+  <div>登记产权单位、估价、资金缺口、施工起止和安置人数；卡点不消除只能留在待立项。
+    <a href="/">← 返回鉴定排序页</a>
+  </div>
+</header>
+<main>
+  <div class="card">
+    <div class="rowline">
+      <strong>操作身份</strong>
+      <select id="actor" style="width:160px">
+        <option value="demo|initiator">立项经办人（initiator）</option>
+        <option value="demo|review_board">立项审查（review_board）</option>
+        <option value="demo|viewer">只看（viewer）</option>
+      </select>
+      <button class="ghost" onclick="loadAll()">刷新</button>
+      <span id="headmsg" class="msg"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>疏散分区临时安置容量</h2>
+    <table id="zones"><thead><tr><th>分区</th><th class="num">容量（人）</th><th>更新人/时间</th><th></th></tr></thead><tbody></tbody></table>
+    <div class="rowline" style="margin-top:.6rem">
+      <input id="zcode" placeholder="分区编码，如 Z-A" style="width:160px">
+      <input id="zcap" type="number" min="0" placeholder="容量（人）" style="width:140px">
+      <button onclick="saveZone()">登记/调整容量</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>立项登记</h2>
+    <div class="grid">
+      <div><label>建筑/加固项目</label><input id="f_title"></div>
+      <div><label>产权单位</label><input id="f_owner"></div>
+      <div><label>估价（元）</label><input id="f_cost" type="number" min="0"></div>
+      <div><label>可动用维修资金（元）</label><input id="f_fund" type="number" min="0"></div>
+      <div><label>施工起</label><input id="f_start" type="date"></div>
+      <div><label>施工止</label><input id="f_end" type="date"></div>
+      <div><label>安置人数</label><input id="f_people" type="number" min="0"></div>
+      <div><label>疏散分区</label><input id="f_zone"></div>
+      <div><label>产权同意</label>
+        <select id="f_consent"><option value="false">未同意</option><option value="true">已签署同意书</option></select>
+      </div>
+      <div><label>外部编号（可空）</label><input id="f_ref"></div>
+    </div>
+    <div class="rowline" style="margin-top:.7rem"><button onclick="register()">登记立项</button><span id="regmsg" class="msg"></span></div>
+  </div>
+
+  <div class="card">
+    <h2>立项列表（卡点直接可见）</h2>
+    <table id="projects">
+      <thead><tr>
+        <th>编号/项目</th><th>产权单位</th><th>同意</th>
+        <th class="num">估价</th><th class="num">维修资金</th><th class="num">资金缺口</th>
+        <th>施工起止</th><th class="num">安置</th><th>分区/容量</th>
+        <th class="num">重叠峰值</th><th>状态/卡点</th><th>操作</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</main>
+
+<dialog id="editdlg"><form method="dialog" class="card">
+  <h2>修订登记值 <small id="e_ref"></small></h2>
+  <input type="hidden" id="e_id"><input type="hidden" id="e_version">
+  <div class="grid">
+    <div><label>建筑/加固项目</label><input id="e_title"></div>
+    <div><label>产权单位</label><input id="e_owner"></div>
+    <div><label>估价（元）</label><input id="e_cost" type="number" min="0"></div>
+    <div><label>可动用维修资金（元）</label><input id="e_fund" type="number" min="0"></div>
+    <div><label>施工起</label><input id="e_start" type="date"></div>
+    <div><label>施工止</label><input id="e_end" type="date"></div>
+    <div><label>安置人数</label><input id="e_people" type="number" min="0"></div>
+    <div><label>疏散分区</label><input id="e_zone"></div>
+    <div><label>产权同意</label>
+      <select id="e_consent"><option value="false">未同意</option><option value="true">已签署同意书</option></select>
+    </div>
+  </div>
+  <p class="msg" style="color:#9a6500">提示：项目已立项时，改动产权单位、估价、资金、起止、人数、分区或同意，
+    原批复立即失效，项目回到待立项重新判断。</p>
+  <div class="rowline"><button value="ok" type="button" onclick="saveRevise()">保存修订</button>
+    <button class="ghost" value="cancel" type="button" onclick="document.getElementById('editdlg').close()">取消</button>
+    <span id="editmsg" class="msg"></span></div>
+</form></dialog>
+
+<script>
+let projects = [], zones = [];
+function identity(){ return document.getElementById('actor').value.split('|'); }
+function headers(){ const [a,r]=identity(); return {'Content-Type':'application/json','X-Actor':a,'X-Role':r}; }
+function money(n){ return Number(n).toLocaleString('zh-CN'); }
+async function api(method, url, body){
+  const opt={method,headers:headers()};
+  if(body!==undefined) opt.body=JSON.stringify(body);
+  const r=await fetch(url,opt); const data=await r.json().catch(()=>({}));
+  if(!r.ok) throw Object.assign(new Error(data.message||('HTTP '+r.status)),{data});
+  return data;
+}
+function setMsg(id, text, bad){ const el=document.getElementById(id); el.textContent=text||''; el.style.color=bad?'#b3261e':'#1d7a37'; }
+
+async function loadAll(){
+  try{
+    const [p,z]=await Promise.all([api('GET','/api/initiation/projects'),api('GET','/api/initiation/zones')]);
+    projects=p.projects; zones=z.zones; renderZones(); renderProjects(); setMsg('headmsg','已刷新');
+  }catch(e){ setMsg('headmsg',e.message,true); }
+}
+function renderZones(){
+  document.querySelector('#zones tbody').innerHTML = zones.length ? '' :
+    '<tr><td colspan="4" style="color:#b3261e">尚无分区容量登记，相关项目无法核对安置容量</td></tr>';
+  for(const z of zones){
+    const tr=document.createElement('tr');
+    tr.innerHTML=`<td>${z.zone_code}</td><td class="num">${z.capacity}</td>
+      <td>${z.updated_by} / ${z.updated_at}</td>
+      <td><button class="ghost" onclick="fillZone('${z.zone_code}',${z.capacity})">调整</button></td>`;
+    document.querySelector('#zones tbody').appendChild(tr);
+  }
+}
+function fillZone(code,cap){ document.getElementById('zcode').value=code; document.getElementById('zcap').value=cap; }
+async function saveZone(){
+  try{
+    await api('POST','/api/initiation/zones',{zone_code:document.getElementById('zcode').value.trim(),capacity:Number(document.getElementById('zcap').value)});
+    setMsg('headmsg','容量已登记'); loadAll();
+  }catch(e){ setMsg('headmsg',e.message,true); }
+}
+
+function statusCell(p){
+  if(p.status==='pending'){
+    const blockers=(p.blockers||[]).map(b=>`<li>${b}</li>`).join('');
+    const sugg=(p.window_suggestions||[]).map(s=>
+      `<li><span class="sugg" onclick='applySuggestion(${p.id},${JSON.stringify(s)})'>调到 ${s.start_date} ~ ${s.end_date}</span></li>`).join('');
+    return `<span class="tag wait">待立项</span><ul class="blockers">${blockers}</ul>${sugg?'<div style="font-size:.78rem">可调整窗口：</div><ul class="blockers" style="color:#1d5db8">'+sugg+'</ul>':''}`;
+  }
+  const invalid=p.approval && p.approval.valid===false;
+  if(invalid) return `<span class="tag dead">原批复已失效</span><ul class="blockers"><li>登记值已改动，需重新批准（${(p.approval.drifted_fields||[]).join('、')}）</li></ul>`;
+  const recheck=(p.blockers||[]).length;
+  return `<span class="tag ok">已立项</span><div style="font-size:.75rem">${p.approval?('批复人 '+p.approval.decided_by):''}</div>`+
+    (recheck?'<ul class="blockers">'+p.blockers.map(b=>`<li>${b}</li>`).join('')+'</ul>':'');
+}
+function renderProjects(){
+  const tb=document.querySelector('#projects tbody'); tb.innerHTML='';
+  for(const p of projects){
+    const tr=document.createElement('tr');
+    const gapTag=p.funding_gap>0?` <span class="tag bad">缺 ${money(p.funding_gap)}</span>`:'';
+    tr.innerHTML=`
+      <td>${p.ref}<br>${p.title}<br><small>v${p.version}</small></td>
+      <td>${p.owner_unit}</td>
+      <td>${p.owner_consent?'<span class="tag ok">已同意</span>':'<span class="tag bad">未同意</span>'}</td>
+      <td class="num">${money(p.estimated_cost)}</td>
+      <td class="num">${money(p.available_fund)}</td>
+      <td class="num">${money(p.funding_gap)}${gapTag}</td>
+      <td>${p.start_date}<br>~ ${p.end_date}</td>
+      <td class="num">${p.resettlement_people}</td>
+      <td>${p.zone_code}<br>${p.zone_registered?('容量 '+p.zone_capacity):'<span class="tag bad">容量未登记</span>'}</td>
+      <td class="num">${p.overlap_peak}</td>
+      <td>${statusCell(p)}</td>
+      <td class="rowline">
+        <button class="ghost" onclick='openEdit(${JSON.stringify(p)})'>修订</button>
+        <button ${p.approvable&&p.status==='pending'?'':'disabled'} onclick="approve(${p.id},${p.version})">批准</button>
+      </td>`;
+    tb.appendChild(tr);
+  }
+}
+async function register(){
+  const body={title:val('f_title'),owner_unit:val('f_owner'),estimated_cost:Number(val('f_cost')),
+    available_fund:Number(val('f_fund')),start_date:val('f_start'),end_date:val('f_end'),
+    resettlement_people:Number(val('f_people')),zone_code:val('f_zone'),
+    owner_consent:val('f_consent')==='true',external_ref:val('f_ref')||null};
+  try{ await api('POST','/api/initiation/projects',body); setMsg('regmsg','已登记，结论见列表'); loadAll(); }
+  catch(e){ setMsg('regmsg',e.message,true); }
+}
+function val(id){ return document.getElementById(id).value; }
+function openEdit(p){
+  e_id.value=p.id; e_version.value=p.version; e_title.value=p.title; e_owner.value=p.owner_unit;
+  e_cost.value=p.estimated_cost; e_fund.value=p.available_fund; e_start.value=p.start_date;
+  e_end.value=p.end_date; e_people.value=p.resettlement_people; e_zone.value=p.zone_code;
+  e_consent.value=String(p.owner_consent); e_ref.textContent=p.ref; setMsg('editmsg','');
+  document.getElementById('editdlg').showModal();
+}
+async function saveRevise(){
+  const body={expected_version:Number(e_version.value),title:e_title.value,owner_unit:e_owner.value,
+    estimated_cost:Number(e_cost.value),available_fund:Number(e_fund.value),
+    start_date:e_start.value,end_date:e_end.value,resettlement_people:Number(e_people.value),
+    zone_code:e_zone.value,owner_consent:e_consent.value==='true'};
+  try{
+    const p=await api('POST','/api/initiation/projects/'+e_id.value,body);
+    document.getElementById('editdlg').close();
+    setMsg('headmsg', p.status==='pending' && body ? '已保存；批复值改动，原批复失效，需重新批准' : '已保存');
+    loadAll();
+  }catch(e){ setMsg('editmsg',e.message,true); }
+}
+function applySuggestion(id,s){
+  const p=projects.find(x=>x.id===id); if(!p) return; openEdit(p);
+  e_start.value=s.start_date; e_end.value=s.end_date;
+}
+async function approve(id,version){
+  try{ await api('POST',`/api/initiation/projects/${id}/approvals`,{expected_version:version});
+    setMsg('headmsg','已批准立项'); loadAll();
+  }catch(e){
+    const extra=e.data&&e.data.blockers?('\n卡点：'+e.data.blockers.join('；')):'';
+    setMsg('headmsg','未予批准：'+e.message+extra,true); loadAll();
+  }
+}
+loadAll();
+</script>
+</body>
+</html>

@@ -8,10 +8,12 @@ from urllib.parse import parse_qs, urlparse
 
 from .domain import (ConflictError, DomainError, NotFoundError, PermissionDenied,
                      ValidationError)
+from .initiation_service import DecisionConflict, InitiationService
 from .service import Service
 
 
-def make_handler(service: Service, static_dir: str):
+def make_handler(service: Service, static_dir: str,
+                 initiation: InitiationService = None):
     root = Path(static_dir)
 
     class Handler(BaseHTTPRequestHandler):
@@ -63,6 +65,8 @@ def make_handler(service: Service, static_dir: str):
                 status = 404
             elif isinstance(exc, PermissionDenied):
                 status = 403
+            elif isinstance(exc, DecisionConflict):
+                status = 409
             elif isinstance(exc, ConflictError):
                 status = 409
             elif isinstance(exc, ValueError):
@@ -71,7 +75,12 @@ def make_handler(service: Service, static_dir: str):
                 status = 400
             else:
                 status = 500
-            self._json(status, {"error": exc.__class__.__name__, "message": str(exc)})
+            payload: Dict[str, Any] = {"error": exc.__class__.__name__,
+                                       "message": str(exc)}
+            if isinstance(exc, DecisionConflict):
+                payload["blockers"] = exc.blockers
+                payload["window_suggestions"] = exc.window_suggestions
+            self._json(status, payload)
 
         def do_GET(self) -> None:
             try:
@@ -80,6 +89,8 @@ def make_handler(service: Service, static_dir: str):
                     self._json(200, {"status": "ok"})
                 elif path == "/":
                     self._html(root / "index.html")
+                elif path == "/initiation":
+                    self._html(root / "initiation.html")
                 elif path == "/api/items":
                     actor, role = self._identity()
                     del actor
@@ -98,10 +109,33 @@ def make_handler(service: Service, static_dir: str):
                     actor, role = self._identity()
                     del actor
                     self._json(200, {"events": service.audit(role)})
+                elif initiation is not None and self._initiation_get(path):
+                    return
                 else:
                     self._json(404, {"error": "not_found"})
             except Exception as exc:
                 self._send_error(exc)
+
+        def _initiation_get(self, path: str) -> bool:
+            actor, role = self._identity()
+            parts = [part for part in path.split("/") if part]
+            if parts[:2] == ["api", "initiation"]:
+                if len(parts) == 3 and parts[2] == "projects":
+                    self._json(200, {"projects": initiation.list_projects(role)})
+                elif len(parts) == 4 and parts[2] == "projects":
+                    self._json(200, initiation.get_project(int(parts[3]), role))
+                elif len(parts) == 3 and parts[2] == "approvals":
+                    self._json(200, {"approvals": initiation.list_approvals(role)})
+                elif len(parts) == 5 and parts[2] == "projects" \
+                        and parts[4] == "approvals":
+                    self._json(200, {"approvals": initiation.list_approvals(
+                        role, int(parts[3]))})
+                elif len(parts) == 3 and parts[2] == "zones":
+                    self._json(200, {"zones": initiation.list_zones(role)})
+                else:
+                    self._json(404, {"error": "not_found"})
+                return True
+            return False
 
         def do_POST(self) -> None:
             try:
@@ -119,9 +153,32 @@ def make_handler(service: Service, static_dir: str):
                     expected = body.get("expected_version")
                     self._json(200, service.transition(
                         item_id, target, expected, actor, role))
+                elif initiation is not None and \
+                        self._initiation_post(path, body, actor, role):
+                    return
                 else:
                     self._json(404, {"error": "not_found"})
             except Exception as exc:
                 self._send_error(exc)
+
+        def _initiation_post(self, path: str, body: Dict[str, Any],
+                             actor: str, role: str) -> bool:
+            parts = [part for part in path.split("/") if part]
+            if parts[:2] != ["api", "initiation"]:
+                return False
+            if len(parts) == 3 and parts[2] == "projects":
+                self._json(201, initiation.register(body, actor, role))
+            elif len(parts) == 4 and parts[2] == "projects":
+                self._json(200, initiation.revise(int(parts[3]), body,
+                                                  actor, role))
+            elif len(parts) == 5 and parts[2] == "projects" \
+                    and parts[4] == "approvals":
+                self._json(200, initiation.approve(
+                    int(parts[3]), body.get("expected_version"), actor, role))
+            elif len(parts) == 3 and parts[2] == "zones":
+                self._json(200, initiation.upsert_zone(body, actor, role))
+            else:
+                self._json(404, {"error": "not_found"})
+            return True
 
     return Handler

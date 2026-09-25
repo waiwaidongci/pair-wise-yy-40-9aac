@@ -65,6 +65,44 @@ class Repository:
                     entry_hash TEXT NOT NULL UNIQUE,
                     created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS initiation_projects (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT NOT NULL,
+                    owner_unit TEXT NOT NULL,
+                    owner_consent INTEGER NOT NULL DEFAULT 0 CHECK(owner_consent IN (0,1)),
+                    estimated_cost INTEGER NOT NULL CHECK(estimated_cost >= 0),
+                    available_fund INTEGER NOT NULL CHECK(available_fund >= 0),
+                    start_date TEXT NOT NULL,
+                    end_date TEXT NOT NULL,
+                    resettlement_people INTEGER NOT NULL CHECK(resettlement_people >= 0),
+                    zone_code TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('pending','approved')),
+                    version INTEGER NOT NULL DEFAULT 1,
+                    external_ref TEXT,
+                    created_by TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS ux_initiation_external_ref
+                    ON initiation_projects(external_ref) WHERE external_ref IS NOT NULL;
+                CREATE TABLE IF NOT EXISTS approvals (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_id INTEGER NOT NULL
+                        REFERENCES initiation_projects(id) ON DELETE CASCADE,
+                    valid INTEGER NOT NULL DEFAULT 1 CHECK(valid IN (0,1)),
+                    snapshot TEXT NOT NULL,
+                    decided_by TEXT NOT NULL,
+                    decided_at TEXT NOT NULL,
+                    invalidated_at TEXT,
+                    invalidated_by TEXT,
+                    invalidation_reason TEXT
+                );
+                CREATE TABLE IF NOT EXISTS evacuation_zones (
+                    zone_code TEXT PRIMARY KEY,
+                    capacity INTEGER NOT NULL CHECK(capacity >= 0),
+                    updated_by TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
             """)
 
     @staticmethod
@@ -209,6 +247,180 @@ class Repository:
                 return False
             previous = row["entry_hash"]
         return True
+
+    # ---- 加固立项台：立项项目 / 批复 / 疏散分区 ----
+    def _project(self, row: sqlite3.Row) -> Dict[str, Any]:
+        item = dict(row)
+        item["owner_consent"] = bool(item["owner_consent"])
+        return item
+
+    def create_initiation_project(self, data: Dict[str, Any],
+                                  actor: str) -> Dict[str, Any]:
+        now = utc_now()
+        try:
+            with self._lock, self.conn:
+                cur = self.conn.execute(
+                    """INSERT INTO initiation_projects(title, owner_unit, owner_consent,
+                       estimated_cost, available_fund, start_date, end_date,
+                       resettlement_people, zone_code, status, version, external_ref,
+                       created_by, created_at, updated_at)
+                       VALUES(?,?,?,?,?,?,?,?,?, 'pending', 1,?,?,?,?)""",
+                    (data["title"], data["owner_unit"],
+                     1 if data["owner_consent"] else 0,
+                     data["estimated_cost"], data["available_fund"],
+                     data["start_date"], data["end_date"],
+                     data["resettlement_people"], data["zone_code"],
+                     data.get("external_ref"), actor, now, now),
+                )
+                project_id = int(cur.lastrowid)
+        except sqlite3.IntegrityError as exc:
+            raise ConflictError("external_ref已存在") from exc
+        return self.get_initiation_project(project_id)
+
+    def get_initiation_project(self, project_id: int) -> Dict[str, Any]:
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT * FROM initiation_projects WHERE id=?", (project_id,)
+            ).fetchone()
+        if row is None:
+            raise NotFoundError("立项项目不存在")
+        return self._project(row)
+
+    def list_initiation_projects(self) -> List[Dict[str, Any]]:
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT * FROM initiation_projects ORDER BY id DESC"
+            ).fetchall()
+        return [self._project(row) for row in rows]
+
+    def list_approved_projects(self,
+                               zone_code: Optional[str] = None) -> List[Dict[str, Any]]:
+        sql = "SELECT * FROM initiation_projects WHERE status='approved'"
+        params: tuple = ()
+        if zone_code is not None:
+            sql += " AND zone_code=?"
+            params = (zone_code,)
+        with self._lock:
+            rows = self.conn.execute(sql, params).fetchall()
+        return [self._project(row) for row in rows]
+
+    def revise_initiation_project(self, project_id: int, data: Dict[str, Any],
+                                  expected_version: int, actor: str,
+                                  invalidate: bool, reason: str) -> Dict[str, Any]:
+        """按expected_version乐观更新；invalidate时同一事务内作废旧批复。"""
+        now = utc_now()
+        assignments = ["title=?", "owner_unit=?", "owner_consent=?",
+                       "estimated_cost=?", "available_fund=?", "start_date=?",
+                       "end_date=?", "resettlement_people=?", "zone_code=?"]
+        values: List[Any] = [
+            data["title"], data["owner_unit"],
+            1 if data["owner_consent"] else 0,
+            data["estimated_cost"], data["available_fund"],
+            data["start_date"], data["end_date"],
+            data["resettlement_people"], data["zone_code"],
+        ]
+        if invalidate:
+            assignments.append("status='pending'")
+        assignments.append("version=version+1")
+        assignments.append("updated_at=?")
+        values.append(now)
+        values += [project_id, expected_version]
+        with self._lock, self.conn:
+            cur = self.conn.execute(
+                f"UPDATE initiation_projects SET {', '.join(assignments)} "
+                "WHERE id=? AND version=?", values,
+            )
+            if cur.rowcount == 0:
+                exists = self.conn.execute(
+                    "SELECT 1 FROM initiation_projects WHERE id=?", (project_id,)
+                ).fetchone()
+                if exists is None:
+                    raise NotFoundError("立项项目不存在")
+                raise ConflictError("版本冲突，请刷新后重试")
+            if invalidate:
+                self.conn.execute(
+                    """UPDATE approvals SET valid=0, invalidated_at=?,
+                       invalidated_by=?, invalidation_reason=?
+                       WHERE project_id=? AND valid=1""",
+                    (now, actor, reason, project_id),
+                )
+        return self.get_initiation_project(project_id)
+
+    def mark_project_approved(self, project_id: int) -> None:
+        with self._lock, self.conn:
+            self.conn.execute(
+                "UPDATE initiation_projects SET status='approved' WHERE id=?",
+                (project_id,),
+            )
+
+    def add_approval(self, project_id: int, snapshot: dict, actor: str) -> Dict[str, Any]:
+        now = utc_now()
+        with self._lock, self.conn:
+            cur = self.conn.execute(
+                """INSERT INTO approvals(project_id, valid, snapshot, decided_by,
+                   decided_at) VALUES(?,1,?,?,?)""",
+                (project_id, json.dumps(snapshot, ensure_ascii=False,
+                                        sort_keys=True), actor, now),
+            )
+            approval_id = int(cur.lastrowid)
+            row = self.conn.execute(
+                "SELECT * FROM approvals WHERE id=?", (approval_id,)
+            ).fetchone()
+        return self._approval(row)
+
+    def get_valid_approval(self, project_id: int) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT * FROM approvals WHERE project_id=? AND valid=1 "
+                "ORDER BY id DESC LIMIT 1", (project_id,)
+            ).fetchone()
+        return self._approval(row) if row else None
+
+    def list_approvals(self, project_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        sql = "SELECT * FROM approvals"
+        params: tuple = ()
+        if project_id is not None:
+            sql += " WHERE project_id=?"
+            params = (project_id,)
+        sql += " ORDER BY id DESC"
+        with self._lock:
+            rows = self.conn.execute(sql, params).fetchall()
+        return [self._approval(row) for row in rows]
+
+    @staticmethod
+    def _approval(row: sqlite3.Row) -> Dict[str, Any]:
+        item = dict(row)
+        item["valid"] = bool(item["valid"])
+        item["snapshot"] = json.loads(item["snapshot"])
+        return item
+
+    def get_zone(self, zone_code: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT * FROM evacuation_zones WHERE zone_code=?", (zone_code,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_zones(self) -> List[Dict[str, Any]]:
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT * FROM evacuation_zones ORDER BY zone_code"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def upsert_zone(self, zone_code: str, capacity: int, actor: str) -> Dict[str, Any]:
+        now = utc_now()
+        with self._lock, self.conn:
+            self.conn.execute(
+                """INSERT INTO evacuation_zones(zone_code, capacity, updated_by, updated_at)
+                   VALUES(?,?,?,?)
+                   ON CONFLICT(zone_code) DO UPDATE SET capacity=excluded.capacity,
+                       updated_by=excluded.updated_by, updated_at=excluded.updated_at""",
+                (zone_code, capacity, actor, now),
+            )
+        result = self.get_zone(zone_code)
+        assert result is not None
+        return result
 
     def close(self) -> None:
         with self._lock:
